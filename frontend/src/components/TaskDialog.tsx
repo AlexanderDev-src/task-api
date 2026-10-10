@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { CreateTask, Task, TaskStatus, UpdateTask } from "../lib/types.ts";
 import { STATUS_LABEL, STATUS_ORDER } from "../lib/types.ts";
+import { dayKey, dayKeyToDueAt } from "../lib/date.ts";
 import { Icon } from "./Icon.tsx";
 
 type TaskDialogProps = {
@@ -29,18 +30,28 @@ export function TaskDialog({
   const [title, setTitle] = useState(task?.title ?? "");
   const [description, setDescription] = useState(task?.description ?? "");
   const [status, setStatus] = useState<TaskStatus>(task?.status ?? "todo");
+  const savedDueDay = task?.due_at ? dayKey(new Date(task.due_at)) : "";
+  const [dueDay, setDueDay] = useState(savedDueDay);
 
   if (!open) return null;
 
   const submit = () => {
+    const dueAt = dueDay === "" ? null : dayKeyToDueAt(dueDay);
     if (task) {
       onUpdate(task.id, {
         title,
         description: description.trim() === "" ? null : description,
         status,
+        // Sent only when the day changed, so saving another field does not
+        // reset the time of day the task already had.
+        ...(dueDay === savedDueDay ? {} : { due_at: dueAt }),
       });
     } else {
-      onCreate({ title, description: description.trim() === "" ? null : description });
+      onCreate({
+        title,
+        description: description.trim() === "" ? null : description,
+        due_at: dueAt,
+      });
     }
   };
 
@@ -97,6 +108,16 @@ export function TaskDialog({
               rows={3}
               placeholder="Optional"
               className="rounded-lg border border-border bg-bg px-3 py-2 text-sm text-head outline-none placeholder:text-muted focus:border-accent-border"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs text-text">Due</span>
+            <input
+              type="date"
+              value={dueDay}
+              onChange={(event) => setDueDay(event.target.value)}
+              className={field}
             />
           </label>
 
