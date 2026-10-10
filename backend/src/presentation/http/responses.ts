@@ -18,6 +18,7 @@ export function toTaskBody(task: Task) {
     description: task.description,
     status: task.status,
     created_at: task.createdAt.toISOString(),
+    due_at: task.dueAt === null ? null : task.dueAt.toISOString(),
   };
 }
 

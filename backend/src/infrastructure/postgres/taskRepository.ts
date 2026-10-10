@@ -14,6 +14,7 @@ type TaskRow = {
   description: string | null;
   status: string;
   created_at: Date;
+  due_at: Date | null;
 };
 
 function toTask(row: TaskRow): Task {
@@ -28,6 +29,7 @@ function toTask(row: TaskRow): Task {
     description: row.description,
     status: row.status,
     createdAt: row.created_at,
+    dueAt: row.due_at,
   };
 }
 
@@ -52,10 +54,10 @@ export class PostgresTaskRepository implements TaskRepository {
   insert(task: Task): Promise<void> {
     return inStorage(async () => {
       await this.sql`
-        INSERT INTO tasks (id, title, description, status, created_at)
+        INSERT INTO tasks (id, title, description, status, created_at, due_at)
         VALUES (
           ${task.id}, ${task.title}, ${task.description},
-          ${task.status}, ${task.createdAt}
+          ${task.status}, ${task.createdAt}, ${task.dueAt}
         )`;
     });
   }
@@ -71,12 +73,22 @@ export class PostgresTaskRepository implements TaskRepository {
 
   list(page: TaskPage): Promise<Task[]> {
     return inStorage(async () => {
-      const filter =
+      const status =
         page.status === null
-          ? this.sql``
-          : this.sql`WHERE status = ${page.status}`;
+          ? this.sql`TRUE`
+          : this.sql`status = ${page.status}`;
+      // A task with no due date matches neither bound.
+      const dueFrom =
+        page.dueFrom === null
+          ? this.sql`TRUE`
+          : this.sql`due_at >= ${page.dueFrom}`;
+      const dueBefore =
+        page.dueBefore === null
+          ? this.sql`TRUE`
+          : this.sql`due_at < ${page.dueBefore}`;
       const rows: TaskRow[] = await this.sql`
-        SELECT * FROM tasks ${filter}
+        SELECT * FROM tasks
+        WHERE ${status} AND ${dueFrom} AND ${dueBefore}
         ORDER BY created_at DESC
         LIMIT ${page.limit} OFFSET ${page.offset}`;
       return rows.map(toTask);
@@ -89,7 +101,8 @@ export class PostgresTaskRepository implements TaskRepository {
         UPDATE tasks
         SET title = ${task.title},
             description = ${task.description},
-            status = ${task.status}
+            status = ${task.status},
+            due_at = ${task.dueAt}
         WHERE id = ${task.id}`;
     });
   }

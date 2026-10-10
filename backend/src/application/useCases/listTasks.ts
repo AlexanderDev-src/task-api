@@ -7,6 +7,8 @@ export type ListTasksInput = {
   status?: TaskStatus;
   limit?: bigint;
   offset?: bigint;
+  dueFrom?: Date;
+  dueBefore?: Date;
 };
 
 const DEFAULT_LIMIT = 20n;
@@ -30,8 +32,24 @@ export class ListTasks {
     if (offset < 0n) {
       violations.push({ field: "offset", message: "offset must not be negative" });
     }
+    if (
+      input.dueFrom !== undefined &&
+      input.dueBefore !== undefined &&
+      input.dueFrom >= input.dueBefore
+    ) {
+      violations.push({
+        field: "due_from",
+        message: "due_from must be before due_before",
+      });
+    }
     if (violations.length > 0) throw new ValidationError(violations);
 
-    return this.tasks.list({ status: input.status ?? null, limit, offset });
+    return this.tasks.list({
+      status: input.status ?? null,
+      dueFrom: input.dueFrom ?? null,
+      dueBefore: input.dueBefore ?? null,
+      limit,
+      offset,
+    });
   }
 }

@@ -18,6 +18,7 @@ export type Task = {
   description: string | null;
   status: TaskStatus;
   createdAt: Date;
+  dueAt: Date | null;
 };
 
 const HYPHENATED_UUID = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -65,7 +66,11 @@ export function assertValidTitle(title: string): void {
 }
 
 /** A new task always starts as `todo`, with a fresh id and the current time. */
-export function newTask(title: string, description: string | null): Task {
+export function newTask(
+  title: string,
+  description: string | null,
+  dueAt: Date | null,
+): Task {
   assertValidTitle(title);
   return {
     id: crypto.randomUUID() as TaskId,
@@ -73,5 +78,6 @@ export function newTask(title: string, description: string | null): Task {
     description,
     status: "todo",
     createdAt: new Date(),
+    dueAt,
   };
 }

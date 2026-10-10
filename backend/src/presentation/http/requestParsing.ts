@@ -15,7 +15,8 @@ import type { TaskId, TaskStatus } from "../../domain/task.ts";
    ------------------------------------------------------------------------- */
 
 /** The request could not be read at all: wrong content type, broken JSON, a
-    field of the wrong type, a query value that is not a number. */
+    field of the wrong type, a query value that is not a number or not a
+    timestamp. */
 export class BadRequestError extends Error {
   constructor(reason: string) {
     super(`bad request : ${reason}`);
@@ -49,6 +50,10 @@ function jsonError(reason: string): BadRequestError {
 
 function queryError(reason: string): BadRequestError {
   return new BadRequestError(`Query deserialize error: ${reason}`);
+}
+
+function notATimestamp(raw: string): string {
+  return `invalid value: ${describe(raw)}, expected an RFC 3339 timestamp with an offset`;
 }
 
 function unknownStatus(raw: string): string {
@@ -110,6 +115,35 @@ function requireString(value: unknown): string {
   return value;
 }
 
+const TIMESTAMP =
+  /^(?<day>\d{4}-\d{2}-\d{2})T(?<hour>\d{2}):\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+/** Reads an RFC 3339 timestamp such as "2026-09-08T09:41:00Z" or
+    "2026-09-08T11:41:00+02:00". Returns null for anything else.
+
+    The offset is required: without one the same text is a different instant
+    in every timezone, and the server would have to guess which. */
+function parseTimestamp(raw: string): Date | null {
+  const groups = TIMESTAMP.exec(raw)?.groups;
+  if (groups === undefined) return null;
+
+  const instant = new Date(raw);
+  if (Number.isNaN(instant.getTime())) return null;
+
+  // `new Date` rejects month 13 and minute 60, but it takes hour 24 and
+  // February 30th and quietly moves them to the next day.
+  if (groups.hour === "24") return null;
+  const day = new Date(`${groups.day}T00:00:00Z`).toISOString().slice(0, 10);
+  return day === groups.day ? instant : null;
+}
+
+function requireTimestamp(value: unknown): Date {
+  const raw = requireString(value);
+  const instant = parseTimestamp(raw);
+  if (instant === null) throw jsonError(notATimestamp(raw));
+  return instant;
+}
+
 /** Body of POST /tasks. */
 export async function parseCreateTaskBody(
   request: Request,
@@ -121,6 +155,7 @@ export async function parseCreateTaskBody(
     description: isAbsent(body.description)
       ? null
       : requireString(body.description),
+    dueAt: isAbsent(body.due_at) ? null : requireTimestamp(body.due_at),
   };
 }
 
@@ -133,10 +168,14 @@ export async function parseUpdateTaskBody(
 
   if (!isAbsent(body.title)) changes.title = requireString(body.title);
 
-  // description is the exception: null is kept, because it means "clear it".
+  // description and due_at are the exceptions: null is kept, because it means
+  // "clear it".
   if (body.description !== undefined) {
     changes.description =
       body.description === null ? null : requireString(body.description);
+  }
+  if (body.due_at !== undefined) {
+    changes.dueAt = body.due_at === null ? null : requireTimestamp(body.due_at);
   }
 
   if (!isAbsent(body.status)) {
@@ -168,16 +207,29 @@ function parseQueryInteger(raw: string): bigint {
   return value;
 }
 
+function parseQueryTimestamp(raw: string): Date {
+  const instant = parseTimestamp(raw);
+  if (instant === null) throw queryError(notATimestamp(raw));
+  return instant;
+}
+
+const LIST_QUERY_KEYS = ["status", "limit", "offset", "due_from", "due_before"];
+
 /** Query of GET /tasks. Unknown keys are ignored; a repeated known key is an
     error. */
 export function parseListQuery(url: string): ListTasksInput {
   const query: ListTasksInput = {};
+  const seen = new Set<string>();
   for (const [key, value] of new URL(url).searchParams) {
-    if (key !== "status" && key !== "limit" && key !== "offset") continue;
-    if (query[key] !== undefined) throw queryError(`duplicate field \`${key}\``);
+    if (!LIST_QUERY_KEYS.includes(key)) continue;
+    if (seen.has(key)) throw queryError(`duplicate field \`${key}\``);
+    seen.add(key);
 
     if (key === "status") query.status = parseQueryStatus(value);
-    else query[key] = parseQueryInteger(value);
+    else if (key === "limit") query.limit = parseQueryInteger(value);
+    else if (key === "offset") query.offset = parseQueryInteger(value);
+    else if (key === "due_from") query.dueFrom = parseQueryTimestamp(value);
+    else query.dueBefore = parseQueryTimestamp(value);
   }
   return query;
 }
