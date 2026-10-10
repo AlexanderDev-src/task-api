@@ -36,7 +36,7 @@ never fired.
 | Method | Path          | Behaviour                                                       |
 | ------ | ------------- | --------------------------------------------------------------- |
 | GET    | `/health`     | liveness check                                                   |
-| GET    | `/tasks`      | list tasks — newest first, with `status`, `limit`, `offset`       |
+| GET    | `/tasks`      | list tasks — newest first, with `status`, `limit`, `offset`, `due_from`, `due_before` |
 | POST   | `/tasks`      | create a task — validated, returns `201` + the task              |
 | GET    | `/tasks/{id}` | fetch one task, `404` if it does not exist                       |
 | PATCH  | `/tasks/{id}` | partial update — only the fields you send                        |
@@ -51,6 +51,29 @@ GET /tasks?status=done&limit=20&offset=40
 `limit` defaults to 20 and must be between 1 and 100. Results are ordered by `created_at`
 descending — without a fixed order, paging silently duplicates and skips rows.
 
+A task can have a due date. `due_at` is optional on `POST` and comes back as `null` when it is not
+set. On `PATCH` it follows the same rule as `description`: a missing key leaves it alone, `null`
+clears it.
+
+```json
+{ "title": "learn ntex", "due_at": "2026-10-10T09:00:00+07:00" }
+```
+
+`due_at` is an instant, not a calendar date. It is an RFC 3339 timestamp and the offset is required
+(`Z` or `+07:00`); it is stored as `timestamptz` and always returned in UTC.
+
+`due_from` (inclusive) and `due_before` (exclusive) filter the list by `due_at`. Each works on its
+own. They are instants too, and that is on purpose: "the tasks on 10 October" is a different range in
+every timezone, so the client sends its own two midnights and the server never has to guess one.
+For someone at UTC+7 that day is:
+
+```
+GET /tasks?due_from=2026-10-09T17:00:00Z&due_before=2026-10-10T17:00:00Z
+```
+
+A task with no due date matches no range. In a query string a `+` means a space, so write an offset
+as `%2B07:00`, or send UTC.
+
 Every error comes back in the same JSON shape, including unknown routes:
 
 ```json
@@ -59,6 +82,8 @@ Every error comes back in the same JSON shape, including unknown routes:
 
 Status codes are used deliberately: `400` when the body will not parse, `422` when it parses but
 breaks a validation rule, `404` when the row is not there, `500` for anything the server got wrong.
+The dates follow the same split: a `due_at`, `due_from` or `due_before` that is not a timestamp with
+an offset is a `400`, and a `due_from` that is not before `due_before` is a `422`.
 
 ## Stack
 
@@ -67,7 +92,7 @@ breaks a validation rule, `404` when the row is not there, `500` for anything th
 | Bun        | runtime, package manager, and the PostgreSQL client (`Bun.sql`)           |
 | Elysia     | web framework: routing and the one error hook                             |
 | TypeScript | strict mode, checked with `tsc --noEmit`                                  |
-| PostgreSQL | same database, same schema, same `migrations/` as the Rust version        |
+| PostgreSQL | same database and same `migrations/` as the Rust version, plus `0002`     |
 
 Elysia is the only runtime dependency. There is no validation library: the request parsing is
 written by hand in `requestParsing.ts`, because that is the simplest way to keep the `400` / `422`
@@ -105,11 +130,28 @@ Reading `docs.rs` type signatures and the ntex source directly ended up being fa
 
 ## Running it
 
-PostgreSQL runs in Docker; the API runs on the host.
+### Everything in Docker
 
 ```bash
 git clone git@github.com:AlexanderDev-src/rust-ntex-task-api.git
 cd rust-ntex-task-api
+docker compose up --build
+```
+
+That starts PostgreSQL, the API and the frontend. Open <http://localhost:5173>. nginx in the `web`
+container serves the built frontend and passes `/api/...` on to the `api` container, so
+`http://localhost:5173/api/tasks` is the API's `/tasks`. The API is also published on host port
+8080, which is where `test.fish` and the Vite dev server look for it.
+
+The `api` image is built from `backend/Dockerfile` with the repo root as its build context, because
+the server reads `migrations/` at startup and that directory sits next to `backend/`.
+
+### The API on the host
+
+For work on the backend, run only the database in Docker and the API with Bun. Both ways of running
+the API use port 8080, so stop the `api` container first (`docker compose stop api`).
+
+```bash
 docker compose up -d db
 printf '%s\n' 'DATABASE_URL=postgres://restapi:restapi@127.0.0.1:5433/tasks' 'PORT=8080' > .env
 cd backend
@@ -138,17 +180,23 @@ docker compose exec db psql -U restapi -d tasks -c 'select id, title, status fro
 Configuration comes from the environment; `.env` is only a convenience for local work, and real
 environment variables take precedence over it:
 
-| Variable       | Required | Default | Notes                        |
-| -------------- | -------- | ------- | ---------------------------- |
-| `DATABASE_URL` | yes      | —       | startup fails without it     |
-| `PORT`         | no       | 8080    |                              |
+| Variable       | Required | Default     | Notes                                               |
+| -------------- | -------- | ----------- | --------------------------------------------------- |
+| `DATABASE_URL` | yes      | —           | startup fails without it                            |
+| `HOST`         | no       | `127.0.0.1` | address to listen on; the `api` container sets `0.0.0.0` |
+| `PORT`         | no       | 8080        |                                                     |
 
 A missing or malformed value fails fast with one readable line, not a panic:
 
 ```
 Error: DATABASE_URL is not set
+Error: HOST must not be empty
 Error: PORT must be a number, got "abc"
 ```
+
+The default host is loopback, so a server started on the host is not reachable from other machines.
+Inside a container loopback means the container itself, which is why `docker-compose.yml` sets
+`HOST=0.0.0.0`. An empty `HOST` is refused because Bun would read it as "every interface".
 
 `PORT=4000 bun run start` overrides the file. Ctrl-C shuts down gracefully, giving in-flight requests up
 to five seconds to finish.
@@ -161,8 +209,8 @@ curl -X POST localhost:8080/tasks \
 
 ## Tests
 
-`test.fish` is an acceptance script — 54 checks covering every endpoint, every error path, the
-validation rules, the paging behaviour, and PATCH semantics. It only speaks HTTP, so the same script
+`test.fish` is an acceptance script — 86 checks covering every endpoint, every error path, the
+validation rules, the paging behaviour, PATCH semantics, due dates and the date filter. It only speaks HTTP, so the same script
 that checked the Rust version checks this one. Start the server first, then in another terminal:
 
 ```bash
@@ -191,6 +239,7 @@ The TypeScript backend is split into the four Clean Architecture layers:
 ```
 backend/
 ├── package.json, tsconfig.json, bun.lock
+├── Dockerfile                        the api image; build context is the repo root
 └── src/
     ├── main.ts                       composition root: config, pool, migrations, wiring, listen
     ├── domain/                       the rules, no framework and no database
@@ -210,7 +259,7 @@ backend/
         └── responses.ts              the JSON shape of a task; every error becomes a response here
 migrations/            versioned schema, read by the server at startup
 frontend/              React + TypeScript + Tailwind
-docker-compose.yml     PostgreSQL (plus the frontend image)
+docker-compose.yml     PostgreSQL, the API and the frontend
 ```
 
 Dependencies point inward: `presentation` → `application` → `domain`, and `infrastructure` →
@@ -265,6 +314,8 @@ After the eight phases:
 | PATCH fix   | `Option<Option<String>>` so `null` clears a field and a missing key leaves it    |
 | PostgreSQL  | native `uuid` / `timestamptz`, `$1` placeholders, no unsigned integers           |
 | TS rebuild  | the same API on Bun + Elysia, with the files regrouped into Clean Architecture   |
+| due dates   | `due_at` and a date-range filter; instants on the wire, so the client owns its timezone |
+| Docker      | the API in a container: bind address from `HOST`, build context at the repo root  |
 
 ### What the PostgreSQL move actually changed
 
@@ -299,15 +350,15 @@ Status codes and content types match on all but the cases below. These are the k
 - **`/health` has a content type** (`text/plain`). ntex sent none.
 - **`WORKERS` is gone.** Bun runs one process.
 
-Deliberately out of scope: authentication, tracing, OpenAPI, and running the API itself in Docker. They are
+Deliberately out of scope: authentication, tracing and OpenAPI. They are
 worth doing, but each is its own topic and would have blurred the phase it landed in.
 
 ## Status
 
 All eight phases are done, and the API has been rebuilt in TypeScript in `backend/`. The Rust code
-it was ported from is removed. The 54-check acceptance script passes. Next: a Dockerfile for the API so
-`docker compose up` brings up the whole stack — see the commented-out `api` service in
-`docker-compose.yml`.
+it was ported from is removed. Since the rebuild, tasks have a due date with a date-range filter, and
+`docker compose up --build` brings up the whole stack: database, API and frontend. The 86-check
+acceptance script passes.
 
 This is learning code. It has no auth and no rate limiting, the backend has no unit tests, and none
 of it is hardened for anything. Do not run it in production.
@@ -355,6 +406,8 @@ before.
 - Git commits when I asked for them.
 - The TypeScript rebuild in `backend/`. It is a port of my Rust code, compared against the running
   Rust server request by request.
+- What came after the rebuild: due dates (`due_at`, the date filter, migration `0002`) and the API's
+  Dockerfile.
 
 The Rust backend code (now in the git history), the SQL, and the fixes are mine. Claude's part there was making
 sure I understood why each line was there and catching it when it was wrong.

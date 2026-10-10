@@ -7,7 +7,6 @@ import {
   formatMonth,
   monthMatrix,
   sameDay,
-  taskDayKey,
 } from "../lib/date.ts";
 import { Icon } from "./Icon.tsx";
 import { StatusMark } from "./StatusMark.tsx";
@@ -15,18 +14,25 @@ import { StatusMark } from "./StatusMark.tsx";
 type CalendarProps = {
   month: Date;
   selected: Date | null;
+  /** Tasks due in `month`: they decide which days get a dot. */
   tasks: Task[];
+  /** Tasks due on `selected`, as the backend filtered them. */
+  dayTasks: Task[];
   onMonthChange: (month: Date) => void;
   onSelect: (day: Date | null) => void;
 };
 
-export function Calendar({ month, selected, tasks, onMonthChange, onSelect }: CalendarProps) {
+export function Calendar({
+  month,
+  selected,
+  tasks,
+  dayTasks,
+  onMonthChange,
+  onSelect,
+}: CalendarProps) {
   const cells = monthMatrix(month);
   const counts = countByDay(tasks);
   const today = new Date();
-  const dayTasks = selected
-    ? tasks.filter((task) => taskDayKey(task) === dayKey(selected))
-    : [];
 
   const step = (delta: number) =>
     onMonthChange(new Date(month.getFullYear(), month.getMonth() + delta, 1));
@@ -128,18 +134,6 @@ export function Calendar({ month, selected, tasks, onMonthChange, onSelect }: Ca
       ) : (
         <span className="text-xs text-muted">Pick a day to filter the list.</span>
       )}
-
-      <div className="flex flex-col gap-2 rounded-xl border border-dashed border-border bg-subtle p-3.5">
-        <span className="self-start rounded border border-accent-border bg-accent-bg px-1.5 py-0.5 font-mono text-[10px] tracking-wide text-accent">
-          TODO
-        </span>
-        <p className="text-xs leading-relaxed text-text">
-          Days group by <span className="font-mono">created_at</span> — the only date the
-          API returns today. Add <span className="font-mono">due_at</span> to Task in the
-          Postgres migration, then change{" "}
-          <span className="font-mono">taskDayKey()</span> in src/lib/date.ts.
-        </p>
-      </div>
     </div>
   );
 }

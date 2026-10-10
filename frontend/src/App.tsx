@@ -15,10 +15,18 @@ import {
   taskQueryString,
   updateTask,
 } from "./lib/api.ts";
-import { dayKey, startOfMonth, taskDayKey } from "./lib/date.ts";
-import type { CreateTask, Task, TaskStatus, UpdateTask } from "./lib/types.ts";
+import { dayDueRange, monthDueRange, startOfMonth } from "./lib/date.ts";
+import type {
+  CreateTask,
+  Task,
+  TaskQuery,
+  TaskStatus,
+  UpdateTask,
+} from "./lib/types.ts";
 
 const PAGE_SIZE = 20;
+/** The most GET /tasks hands back in one request. */
+const CALENDAR_LIMIT = 100;
 
 /** Clicking the status mark walks todo -> in progress -> done -> todo. */
 const NEXT_STATUS: Record<TaskStatus, TaskStatus> = {
@@ -31,6 +39,7 @@ function App() {
   const { theme, toggle } = useTheme();
 
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [calendarTasks, setCalendarTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,9 +60,24 @@ function App() {
     message: string;
   } | null>(null);
 
-  const query = { status: status ?? undefined, limit: PAGE_SIZE, offset };
+  /* The selected day goes to the backend as due_from / due_before, so the
+     list and its paging only ever see that day's tasks. */
+  const query: TaskQuery = {
+    status: status ?? undefined,
+    limit: PAGE_SIZE,
+    offset,
+    ...(selectedDay ? dayDueRange(selectedDay) : {}),
+  };
 
-  /* The single read path. Everything else re-runs this after it mutates. */
+  const report = useCallback((cause: unknown) => {
+    if (cause instanceof ApiError) {
+      setToast({ code: String(cause.status), message: cause.message });
+    } else {
+      setToast({ code: null, message: "request failed" });
+    }
+  }, []);
+
+  /* The read path of the list. */
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -62,6 +86,7 @@ function App() {
         status: status ?? undefined,
         limit: PAGE_SIZE,
         offset,
+        ...(selectedDay ? dayDueRange(selectedDay) : {}),
       });
       setTasks(rows);
     } catch (cause) {
@@ -69,27 +94,46 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [status, offset]);
+  }, [status, offset, selectedDay]);
+
+  /* The read path of the calendar: every task due in the visible month, not
+     just the page in the list. A month with more than CALENDAR_LIMIT due
+     tasks shows only the newest ones. */
+  const loadCalendar = useCallback(async () => {
+    try {
+      const rows = await listTasks({
+        status: status ?? undefined,
+        limit: CALENDAR_LIMIT,
+        ...monthDueRange(month),
+      });
+      setCalendarTasks(rows);
+    } catch (cause) {
+      report(cause);
+    }
+  }, [status, month, report]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const report = (cause: unknown) => {
-    if (cause instanceof ApiError) {
-      setToast({ code: String(cause.status), message: cause.message });
-    } else {
-      setToast({ code: null, message: "request failed" });
-    }
+  useEffect(() => {
+    void loadCalendar();
+  }, [loadCalendar]);
+
+  /* An edit can move a task to another day, page or status, so nothing is
+     patched in place: both reads run again. */
+  const reload = () => {
+    void load();
+    void loadCalendar();
   };
 
   const handleCreate = async (input: CreateTask) => {
     setSubmitting(true);
     setFormError(null);
     try {
-      const created = await createTask(input);
-      setTasks((current) => [created, ...current]);
+      await createTask(input);
       setDialogOpen(false);
+      reload();
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 422) {
         setFormError(cause.message);
@@ -105,11 +149,9 @@ function App() {
     setSubmitting(true);
     setFormError(null);
     try {
-      const updated = await updateTask(id, input);
-      setTasks((current) =>
-        current.map((task) => (task.id === id ? updated : task)),
-      );
+      await updateTask(id, input);
       setDialogOpen(false);
+      reload();
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 422) {
         setFormError(cause.message);
@@ -132,6 +174,7 @@ function App() {
     );
     try {
       await updateTask(task.id, { status: next });
+      void loadCalendar();
     } catch (cause) {
       setTasks(previous);
       report(cause);
@@ -145,19 +188,13 @@ function App() {
     try {
       await deleteTask(target.id);
       setTasks((current) => current.filter((task) => task.id !== target.id));
+      void loadCalendar();
     } catch (cause) {
       report(cause);
       // A 404 means someone else removed it — reload rather than guess.
-      void load();
+      reload();
     }
   };
-
-  /* Day filtering is client-side on the current page of tasks.
-     TODO: once the backend can filter by date, send it as a query param
-     instead — this filter only sees the rows already fetched. */
-  const visible = selectedDay
-    ? tasks.filter((task) => taskDayKey(task) === dayKey(selectedDay))
-    : tasks;
 
   const requestLine = `GET /tasks${taskQueryString(query)}`;
 
@@ -185,7 +222,7 @@ function App() {
           />
 
           <TaskList
-            tasks={visible}
+            tasks={tasks}
             loading={loading}
             error={error}
             onCycleStatus={handleCycleStatus}
@@ -205,7 +242,7 @@ function App() {
 
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-xs text-muted">
-              {visible.length} shown · page {Math.floor(offset / PAGE_SIZE) + 1}
+              {tasks.length} shown · page {Math.floor(offset / PAGE_SIZE) + 1}
             </span>
             <div className="grow" />
             <span className="font-mono text-xs text-muted">
@@ -240,9 +277,13 @@ function App() {
           <Calendar
             month={month}
             selected={selectedDay}
-            tasks={tasks}
+            tasks={calendarTasks}
+            dayTasks={selectedDay && !loading ? tasks : []}
             onMonthChange={setMonth}
-            onSelect={setSelectedDay}
+            onSelect={(day) => {
+              setSelectedDay(day);
+              setOffset(0);
+            }}
           />
         </aside>
       </div>

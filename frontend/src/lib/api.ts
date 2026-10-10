@@ -33,12 +33,14 @@ export class ApiError extends Error {
   }
 }
 
-/** GET /tasks?status=&limit=&offset= — serialises TaskQuery. */
+/** GET /tasks?status=&limit=&offset=&due_from=&due_before= — serialises TaskQuery. */
 export function taskQueryString(query: TaskQuery): string {
   const params = new URLSearchParams();
   if (query.status) params.set("status", query.status);
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   if (query.offset !== undefined) params.set("offset", String(query.offset));
+  if (query.due_from) params.set("due_from", query.due_from);
+  if (query.due_before) params.set("due_before", query.due_before);
   const qs = params.toString();
   return qs ? `?${qs}` : "";
 }

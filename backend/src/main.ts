@@ -34,7 +34,7 @@ async function run(): Promise<void> {
     listTasks: new ListTasks(tasks),
     updateTask: new UpdateTask(tasks),
     deleteTask: new DeleteTask(tasks),
-  }).listen({ hostname: "127.0.0.1", port: config.port });
+  }).listen({ hostname: config.host, port: config.port });
 
   const shutDown = async () => {
     // Requests already running get five seconds to finish. After that the

@@ -1,15 +1,15 @@
-# Frontend + database. The api runs on the host (cd backend && bun run start).
-# Its service is commented out below because it still needs a Dockerfile and a
-# bind address change.
+# Frontend + api + database.
 #
-# Run what exists today:  docker compose up --build web
+# Run the whole stack:    docker compose up --build
+# Run only the database:  docker compose up -d db
+#   (then start the api on the host: cd backend && bun run start)
 services:
   web:
     build: ./frontend
     ports:
       - "5173:80"
     restart: unless-stopped
-    # TODO: add `depends_on: [api]` when the api service is enabled.
+    depends_on: [api]
 
   db:
     image: postgres:17-alpine
@@ -27,28 +27,22 @@ services:
       timeout: 3s
       retries: 10
 
-  # TODO: run the api in Docker too.
-  #   1. Write backend/Dockerfile (oven/bun image, `bun install`, then
-  #      `bun src/main.ts`). The build context must be the repo root, because
-  #      the server reads the SQL files in migrations/ at startup.
-  #   2. backend/src/main.ts binds "127.0.0.1". Inside a container that only
-  #      listens on loopback, so `web` cannot reach it — read the host from
-  #      env (HOST, default "127.0.0.1") and set HOST=0.0.0.0 here.
-  #   3. Uncomment the /api/ location block in frontend/nginx.conf.
-  #
-  # api:
-  #   build:
-  #     context: .
-  #     dockerfile: backend/Dockerfile
-  #   environment:
-  #     DATABASE_URL: postgres://restapi:restapi@db:5432/tasks
-  #     HOST: 0.0.0.0
-  #     PORT: 8080
-  #   depends_on:
-  #     db:
-  #       condition: service_healthy
-  #   ports:
-  #     - "8080:8080"
+  api:
+    # The context is the repo root because the server reads migrations/.
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_URL: postgres://restapi:restapi@db:5432/tasks
+      # The default, 127.0.0.1, is loopback inside the container: `web` could
+      # not reach it.
+      HOST: 0.0.0.0
+      PORT: 8080
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
 
 volumes:
   pgdata:

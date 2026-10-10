@@ -5,6 +5,7 @@ import type { TaskRepository } from "../ports/taskRepository.ts";
 export type CreateTaskInput = {
   title: string;
   description: string | null;
+  dueAt: Date | null;
 };
 
 export class CreateTask {
@@ -15,7 +16,7 @@ export class CreateTask {
   }
 
   async execute(input: CreateTaskInput): Promise<Task> {
-    const task = newTask(input.title, input.description);
+    const task = newTask(input.title, input.description, input.dueAt);
     await this.tasks.insert(task);
     return task;
   }

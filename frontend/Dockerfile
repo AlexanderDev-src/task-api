@@ -4,7 +4,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-# TODO: pass VITE_API_URL here if the API is NOT served under /api by nginx:
+# Only needed if the API is NOT served under /api by nginx. Then pass
+# VITE_API_URL here:
 #   ARG VITE_API_URL
 #   ENV VITE_API_URL=$VITE_API_URL
 RUN npm run build

@@ -2,6 +2,10 @@ import type { Task, TaskId, TaskStatus } from "../../domain/task.ts";
 
 export type TaskPage = {
   status: TaskStatus | null;
+  /** Tasks due at or after this instant. */
+  dueFrom: Date | null;
+  /** Tasks due before this instant. */
+  dueBefore: Date | null;
   // bigint because the Rust version used i64 here: `?offset=9223372036854775807`
   // is a valid request, and a JS number cannot hold it exactly.
   limit: bigint;

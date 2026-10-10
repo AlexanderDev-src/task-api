@@ -47,6 +47,19 @@ function body
     curl -s -m 5 $argv
 end
 
+# One request, two answers: the body, then the status code on its own line.
+# For a POST that succeeds, `code` and `body` would each create a task.
+function both
+    curl -s -m 5 -w '\n%{http_code}' $argv
+end
+
+# listed_check <label> <yes|no> <id> <ids...>
+function listed_check
+    set -l listed no
+    contains -- $argv[3] $argv[4..]; and set listed yes
+    check $argv[1] $argv[2] $listed
+end
+
 # ---------------------------------------------------------------- reachable?
 if not curl -s -o /dev/null -m 3 $BASE/health
     echo "server not answering on $BASE — start it with: cd backend && bun run start"
@@ -59,8 +72,9 @@ echo "happy path"
 check "GET /health" 200 (code $BASE/health)
 check "  body" OK (body $BASE/health)
 
-set -l created (body -X POST $BASE/tasks -H 'content-type: application/json' -d '{"title":"acceptance"}')
-check "POST /tasks" 201 (code -X POST $BASE/tasks -H 'content-type: application/json' -d '{"title":"acceptance"}')
+set -l reply (both -X POST $BASE/tasks -H 'content-type: application/json' -d '{"title":"acceptance"}')
+set -l created $reply[1]
+check "POST /tasks" 201 $reply[-1]
 contains_check "  returns the task" '"title":"acceptance"' "$created"
 contains_check "  status starts as todo" '"status":"todo"' "$created"
 contains_check "  server assigned an id" '"id"' "$created"
@@ -128,9 +142,9 @@ check "  content-type is json" application/json (curl -s -i -m 5 -X POST $BASE/t
 check "POST 250-char title" 422 (code -X POST $BASE/tasks -H 'content-type: application/json' -d "{\"title\":\"$too_long\"}")
 
 # 200 is the last accepted length, so it must still succeed. Clean it up after.
-set -l edge (body -X POST $BASE/tasks -H 'content-type: application/json' -d "{\"title\":\"$at_limit\"}")
-check "POST 200-char title" 201 (code -X POST $BASE/tasks -H 'content-type: application/json' -d "{\"title\":\"$at_limit\"}")
-for stale in (echo $edge | string match -rg '"id":"([^"]+)"')
+set -l reply (both -X POST $BASE/tasks -H 'content-type: application/json' -d "{\"title\":\"$at_limit\"}")
+check "POST 200-char title" 201 $reply[-1]
+for stale in (echo $reply[1] | string match -rg '"id":"([^"]+)"')
     curl -s -o /dev/null -m 5 -X DELETE $BASE/tasks/$stale
 end
 
@@ -261,6 +275,96 @@ else
     set -g failed (math $failed + 1)
     printf '  \033[31mFAIL\033[0m  %-34s %s\n' "PATCH semantics" "could not create the probe task"
 end
+
+echo
+echo "due dates — due_at"
+
+# due_at is an instant. It must carry an offset, and it comes back in UTC.
+# The probes are due in 2001, so the filter checks below do not meet real tasks.
+set -l reply (both -X POST $BASE/tasks -H 'content-type: application/json' -d '{"title":"due early","due_at":"2001-02-03T00:30:00+07:00"}')
+set -l early (echo $reply[1] | string match -rg '"id":"([^"]+)"')
+check "POST with due_at" 201 $reply[-1]
+contains_check "  comes back in UTC" '"due_at":"2001-02-02T17:30:00.000Z"' "$reply[1]"
+
+set -l reply (both -X POST $BASE/tasks -H 'content-type: application/json' -d '{"title":"due never"}')
+set -l never (echo $reply[1] | string match -rg '"id":"([^"]+)"')
+contains_check "POST without due_at" '"due_at":null' "$reply[1]"
+
+# A due_at that is not a timestamp will not parse, so it is a 400 like any
+# other field of the wrong shape. Nothing is created.
+check "POST due_at without offset" 400 (code -X POST $BASE/tasks -H 'content-type: application/json' -d '{"title":"bad due","due_at":"2001-02-03T00:30:00"}')
+check "POST due_at date only" 400 (code -X POST $BASE/tasks -H 'content-type: application/json' -d '{"title":"bad due","due_at":"2001-02-03"}')
+check "POST due_at 30 February" 400 (code -X POST $BASE/tasks -H 'content-type: application/json' -d '{"title":"bad due","due_at":"2001-02-30T00:00:00Z"}')
+check "POST due_at as a number" 400 (code -X POST $BASE/tasks -H 'content-type: application/json' -d '{"title":"bad due","due_at":981131400}')
+contains_check "  error shape" '"error":"bad_request"' (body -X POST $BASE/tasks -H 'content-type: application/json' -d '{"title":"bad due","due_at":"soon"}')
+
+if test -n "$early" -a -n "$never"
+    check "PATCH bad due_at" 400 (code -X PATCH $BASE/tasks/$early -H 'content-type: application/json' -d '{"due_at":"soon"}')
+    contains_check "  original survived" '"due_at":"2001-02-02T17:30:00.000Z"' (body $BASE/tasks/$early)
+
+    # PATCH treats due_at like description: a value sets it, an absent key
+    # leaves it alone, null clears it.
+    curl -s -o /dev/null -m 5 -X PATCH $BASE/tasks/$never -H 'content-type: application/json' -d '{"due_at":"2001-06-01T09:00:00Z"}'
+    contains_check "a timestamp sets it" '"due_at":"2001-06-01T09:00:00.000Z"' (body $BASE/tasks/$never)
+
+    curl -s -o /dev/null -m 5 -X PATCH $BASE/tasks/$never -H 'content-type: application/json' -d '{"status":"done"}'
+    contains_check "absent key leaves it alone" '"due_at":"2001-06-01T09:00:00.000Z"' (body $BASE/tasks/$never)
+
+    curl -s -o /dev/null -m 5 -X PATCH $BASE/tasks/$never -H 'content-type: application/json' -d '{"due_at":null}'
+    contains_check "null clears it" '"due_at":null' (body $BASE/tasks/$never)
+    contains_check "  status survived the clear" '"status":"done"' (body $BASE/tasks/$never)
+
+    echo
+    echo "date filter — due_from, due_before"
+
+    # "Tasks on 3 February" for someone at UTC+7 is everything between their
+    # two midnights, sent as instants. `early` is due at 00:30 their time,
+    # which is still 2 February in UTC: the task a UTC-day filter loses.
+    set -l first (body -X POST $BASE/tasks -H 'content-type: application/json' -d '{"title":"due at midnight","due_at":"2001-02-03T00:00:00+07:00"}' | string match -rg '"id":"([^"]+)"')
+    set -l next (body -X POST $BASE/tasks -H 'content-type: application/json' -d '{"title":"due next midnight","due_at":"2001-02-04T00:00:00+07:00"}' | string match -rg '"id":"([^"]+)"')
+    curl -s -o /dev/null -m 5 -X PATCH $BASE/tasks/$first -H 'content-type: application/json' -d '{"status":"done"}'
+
+    set -l day "due_from=2001-02-02T17:00:00Z&due_before=2001-02-03T17:00:00Z"
+    set -l on_day (ids "$BASE/tasks?limit=100&$day")
+    listed_check "00:30 local is on the day" yes $early $on_day
+    listed_check "  due_from is inclusive" yes $first $on_day
+    listed_check "  due_before is exclusive" no $next $on_day
+    listed_check "  no due date is never listed" no $never $on_day
+    listed_check "the UTC day would lose it" no $early (ids "$BASE/tasks?limit=100&due_from=2001-02-03T00:00:00Z&due_before=2001-02-04T00:00:00Z")
+
+    # A + in a query string means a space, so an offset is written %2B.
+    check "same day as %2B07:00" (string join ',' $on_day) (string join ',' (ids "$BASE/tasks?limit=100&due_from=2001-02-03T00:00:00%2B07:00&due_before=2001-02-04T00:00:00%2B07:00"))
+    check "  a bare + is refused" 400 (code "$BASE/tasks?due_from=2001-02-03T00:00:00+07:00")
+
+    listed_check "due_from alone" yes $next (ids "$BASE/tasks?limit=100&due_from=2001-02-03T17:00:00Z")
+    listed_check "due_before alone" yes $early (ids "$BASE/tasks?limit=100&due_before=2001-02-03T17:00:00Z")
+    listed_check "  and it stops there" no $next (ids "$BASE/tasks?limit=100&due_before=2001-02-03T17:00:00Z")
+
+    set -l done_on_day (ids "$BASE/tasks?limit=100&status=done&$day")
+    listed_check "status and day together" yes $first $done_on_day
+    listed_check "  the todo one is filtered out" no $early $done_on_day
+
+    for stale in $first $next
+        curl -s -o /dev/null -m 5 -X DELETE $BASE/tasks/$stale
+    end
+else
+    set -g failed (math $failed + 1)
+    printf '  \033[31mFAIL\033[0m  %-34s %s\n' "due dates" "could not create the probe tasks"
+end
+
+for stale in $early $never
+    curl -s -o /dev/null -m 5 -X DELETE $BASE/tasks/$stale
+end
+
+# Same split as everywhere else: a value that is not a timestamp is a 400, a
+# range that parses but is empty or backwards is a 422.
+check "?due_from=2001-02-03" 400 (code "$BASE/tasks?due_from=2001-02-03")
+check "?due_before=soon" 400 (code "$BASE/tasks?due_before=soon")
+check "?due_from twice" 400 (code "$BASE/tasks?due_from=2001-02-03T00:00:00Z&due_from=2001-02-04T00:00:00Z")
+set -l backwards (body "$BASE/tasks?due_from=2001-02-04T00:00:00Z&due_before=2001-02-03T00:00:00Z")
+check "?due_from after due_before" 422 (code "$BASE/tasks?due_from=2001-02-04T00:00:00Z&due_before=2001-02-03T00:00:00Z")
+contains_check "  says which field" due_from "$backwards"
+check "?due_from equal to due_before" 422 (code "$BASE/tasks?due_from=2001-02-03T00:00:00Z&due_before=2001-02-03T00:00:00Z")
 
 echo
 printf 'passed %d   failed %d\n\n' $passed $failed

@@ -3,12 +3,13 @@ import { assertValidTitle } from "../../domain/task.ts";
 import type { Task, TaskId, TaskStatus } from "../../domain/task.ts";
 import type { TaskRepository } from "../ports/taskRepository.ts";
 
-/** A missing key means "leave this field alone". Only `description` can also
-    be null, and null means "clear it". */
+/** A missing key means "leave this field alone". Only `description` and
+    `dueAt` can also be null, and null means "clear it". */
 export type UpdateTaskInput = {
   title?: string;
   description?: string | null;
   status?: TaskStatus;
+  dueAt?: Date | null;
 };
 
 export class UpdateTask {
@@ -35,6 +36,7 @@ export class UpdateTask {
           ? current.description
           : changes.description,
       status: changes.status ?? current.status,
+      dueAt: changes.dueAt === undefined ? current.dueAt : changes.dueAt,
     };
     await this.tasks.update(updated);
     return updated;
