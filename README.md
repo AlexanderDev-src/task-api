@@ -1,6 +1,12 @@
-# Task API — learning Rust by building a REST API
+# Task API — Rebuild Rust -> TS
 
-A small Task/Todo REST API written in Rust with [ntex](https://ntex.rs) and PostgreSQL.
+A small Task/Todo REST API. It was first written in Rust with [ntex](https://ntex.rs) as a way to
+learn Rust, and has now been rebuilt in TypeScript on [Elysia](https://elysiajs.com) and
+[Bun](https://bun.sh), still on PostgreSQL.
+
+The rebuild is a straight port. The routes, status codes and JSON are the same; what changed is the
+language and the file layout, which now follows Clean Architecture. The TypeScript backend lives in
+`backend/`. The Rust source has been removed from the tree; it is still in the git history.
 
 **This repository is a learning exercise, not a product.** The goal was never the API — it was
 learning Rust. The API is just the thing I built while doing it.
@@ -56,6 +62,21 @@ breaks a validation rule, `404` when the row is not there, `500` for anything th
 
 ## Stack
 
+| Piece      | Why                                                                      |
+| ---------- | ------------------------------------------------------------------------ |
+| Bun        | runtime, package manager, and the PostgreSQL client (`Bun.sql`)           |
+| Elysia     | web framework: routing and the one error hook                             |
+| TypeScript | strict mode, checked with `tsc --noEmit`                                  |
+| PostgreSQL | same database, same schema, same `migrations/` as the Rust version        |
+
+Elysia is the only runtime dependency. There is no validation library: the request parsing is
+written by hand in `requestParsing.ts`, because that is the simplest way to keep the `400` / `422`
+split exactly as the Rust version had it.
+
+### The Rust version
+
+The original backend used these crates:
+
 | Crate       | Why                                                             |
 | ----------- | --------------------------------------------------------------- |
 | `ntex`      | web framework (thread-per-core, actix-derived)                   |
@@ -91,10 +112,16 @@ git clone git@github.com:AlexanderDev-src/rust-ntex-task-api.git
 cd rust-ntex-task-api
 docker compose up -d db
 printf '%s\n' 'DATABASE_URL=postgres://restapi:restapi@127.0.0.1:5433/tasks' 'PORT=8080' > .env
-cargo run
+cd backend
+bun install
+bun run start
 ```
 
-Migrations run automatically at startup. The database is published on host port **5433**, not the
+`bun run start` reads the `.env` in the repo root.
+
+Migrations run automatically at startup. The server applies the SQL files from `migrations/` and
+records them in the same `_sqlx_migrations` table that sqlx used, so a database first set up by the
+Rust version is seen as already migrated. The database is published on host port **5433**, not the
 usual 5432, so it does not collide with another Postgres already on the machine. Its data lives in the
 `pgdata` named volume and survives `docker compose down`; only `docker compose down -v` deletes it.
 
@@ -115,7 +142,6 @@ environment variables take precedence over it:
 | -------------- | -------- | ------- | ---------------------------- |
 | `DATABASE_URL` | yes      | —       | startup fails without it     |
 | `PORT`         | no       | 8080    |                              |
-| `WORKERS`      | no       | 4       | ntex worker threads          |
 
 A missing or malformed value fails fast with one readable line, not a panic:
 
@@ -124,7 +150,7 @@ Error: DATABASE_URL is not set
 Error: PORT must be a number, got "abc"
 ```
 
-`PORT=4000 cargo run` overrides the file. Ctrl-C shuts down gracefully, giving in-flight requests up
+`PORT=4000 bun run start` overrides the file. Ctrl-C shuts down gracefully, giving in-flight requests up
 to five seconds to finish.
 
 ```bash
@@ -136,7 +162,8 @@ curl -X POST localhost:8080/tasks \
 ## Tests
 
 `test.fish` is an acceptance script — 54 checks covering every endpoint, every error path, the
-validation rules, the paging behaviour, and PATCH semantics. Start the server first, then in another terminal:
+validation rules, the paging behaviour, and PATCH semantics. It only speaks HTTP, so the same script
+that checked the Rust version checks this one. Start the server first, then in another terminal:
 
 ```bash
 ./test.fish          # or ./test.fish 4000 for a different port
@@ -146,10 +173,10 @@ It seeds its own tasks and deletes them afterwards, so it is safe to run repeate
 it asserts is relative to what it created — leftover rows do not break it. It exits non-zero if
 anything fails.
 
-There is also one Rust unit test, for the `UpdateTask` deserializer — it needs no server or database:
+The backend has a type check and no unit tests of its own:
 
 ```bash
-cargo test
+cd backend && bun run typecheck
 ```
 
 Two of the acceptance checks are less obvious than the rest and were worth writing: one asserts that page 1
@@ -159,23 +186,55 @@ ever look at one page.
 
 ## Layout
 
+The TypeScript backend is split into the four Clean Architecture layers:
+
 ```
-src/
-├── main.rs            startup: config, pool, migrations, routes
-├── lib.rs             module declarations
-├── config.rs          Config::from_env — the only place that reads the environment
-├── error.rs           AppError + WebResponseError — every error becomes JSON here
-├── extract.rs         ValidatedJson<T> and ValidatedQuery<T>, custom FromRequest extractors
-├── state.rs           AppState — owns the PgPool, all SQL lives here
-├── handlers/tasks.rs  HTTP only: request in, AppState call, response out
-└── models/task.rs     Task, CreateTask, UpdateTask, TaskQuery, TaskStatus
-migrations/            versioned schema, applied on startup
+backend/
+├── package.json, tsconfig.json, bun.lock
+└── src/
+    ├── main.ts                       composition root: config, pool, migrations, wiring, listen
+    ├── domain/                       the rules, no framework and no database
+    │   ├── task.ts                   Task, TaskStatus, TaskId, the title rule, newTask
+    │   └── errors.ts                 ValidationError, TaskNotFoundError
+    ├── application/                  what the app does, one class per use case
+    │   ├── ports/taskRepository.ts   what the use cases need from storage
+    │   └── useCases/                 createTask, getTask, listTasks, updateTask, deleteTask
+    ├── infrastructure/               the outside world
+    │   ├── config.ts                 loadConfig — the only place that reads the environment
+    │   └── postgres/
+    │       ├── taskRepository.ts     the repository on Bun.sql, all SQL lives here
+    │       └── migrations.ts         applies migrations/ at startup
+    └── presentation/http/            HTTP only
+        ├── taskRoutes.ts             Elysia routes: request in, use case call, response out
+        ├── requestParsing.ts         body, query and path parsing — where the 400s come from
+        └── responses.ts              the JSON shape of a task; every error becomes a response here
+migrations/            versioned schema, read by the server at startup
 frontend/              React + TypeScript + Tailwind
 docker-compose.yml     PostgreSQL (plus the frontend image)
 ```
 
-Dependencies point one way: `handlers` → `state` → `models`. Handlers contain no SQL, and models know
-nothing about HTTP.
+Dependencies point inward: `presentation` → `application` → `domain`, and `infrastructure` →
+`application` → `domain`. The domain imports nothing from the other layers, the use cases know the
+repository only as a type, and `main.ts` is the one file that sees everything and wires it together.
+
+Where each Rust file went (the Rust files are in the git history):
+
+| Rust (`src/`)       | TypeScript (`backend/src/`)                                                    |
+| ------------------- | ------------------------------------------------------------------------------ |
+| `main.rs`           | `main.ts`                                                                      |
+| `config.rs`         | `infrastructure/config.ts`                                                     |
+| `models/task.rs`    | `domain/task.ts`                                                               |
+| `error.rs`          | `domain/errors.ts` for the errors, `presentation/http/responses.ts` for the status codes |
+| `extract.rs`        | `presentation/http/requestParsing.ts`                                          |
+| `handlers/tasks.rs` | `presentation/http/taskRoutes.ts` plus `application/useCases/`                 |
+| `state.rs`          | `application/ports/taskRepository.ts` and `infrastructure/postgres/taskRepository.ts` |
+
+One piece of logic moved, not just a file: the PATCH merge (keep, replace or clear each field) sat
+next to the SQL in `state.rs` and now lives in the `updateTask` use case, so the repository only
+stores what it is given.
+
+The Rust version already had a simpler form of this: `handlers` → `state` → `models`, with no SQL in
+the handlers and no HTTP in the models.
 
 That layering paid off concretely. Phase 6 replaced an in-memory `Arc<Mutex<HashMap>>` with a real
 SQLite pool, and the five handlers changed by adding `.await` — nothing else. The later move from
@@ -205,6 +264,7 @@ After the eight phases:
 | frontend    | React + TS client behind a Vite dev proxy; one `api.ts` owns every request       |
 | PATCH fix   | `Option<Option<String>>` so `null` clears a field and a missing key leaves it    |
 | PostgreSQL  | native `uuid` / `timestamptz`, `$1` placeholders, no unsigned integers           |
+| TS rebuild  | the same API on Bun + Elysia, with the files regrouped into Clean Architecture   |
 
 ### What the PostgreSQL move actually changed
 
@@ -219,17 +279,38 @@ After the eight phases:
   was a Postgres enum that the migration never created; every insert failed with a generic
   `database error`. The column is `TEXT`, so the derive says `TEXT`.
 
+### What the TypeScript rebuild actually changed
+
+The port was checked by sending the same 118 requests to both servers and comparing the answers.
+Status codes and content types match on all but the cases below. These are the known differences:
+
+- **Timestamps have millisecond precision.** A JS `Date` holds milliseconds, so `created_at` is
+  always `2026-09-08T09:41:00.123Z`. Rust returned nanoseconds from `POST` and microseconds when
+  reading the row back.
+- **Parse error messages are worded differently.** The status is still `400` and the `error` code is
+  still `bad_request`, but the text for broken JSON comes from the JavaScript parser, and there is no
+  `at line 1 column 12` suffix. The plain-text `404` for an id that is not a UUID no longer says
+  which character was wrong.
+- **JSON bodies are read more strictly in one way and less in another.** serde accepted a JSON array
+  as a struct, so `["title", null]` created a task; now it is a `400`. serde rejected a repeated key;
+  `JSON.parse` keeps the last one.
+- **`HEAD` works.** Elysia answers `HEAD /tasks` like `GET` without the body. ntex sent it to the
+  `404` handler.
+- **`/health` has a content type** (`text/plain`). ntex sent none.
+- **`WORKERS` is gone.** Bun runs one process.
+
 Deliberately out of scope: authentication, tracing, OpenAPI, and running the API itself in Docker. They are
 worth doing, but each is its own topic and would have blurred the phase it landed in.
 
 ## Status
 
-All eight phases are done, the backend runs on PostgreSQL, and the 54-check acceptance script plus
-the Rust unit test pass. Next: a Dockerfile for the API so `docker compose up` brings up the whole
-stack — see the commented-out `api` service in `docker-compose.yml`.
+All eight phases are done, and the API has been rebuilt in TypeScript in `backend/`. The Rust code
+it was ported from is removed. The 54-check acceptance script passes. Next: a Dockerfile for the API so
+`docker compose up` brings up the whole stack — see the commented-out `api` service in
+`docker-compose.yml`.
 
-This is learning code. It has no auth and no rate limiting, the Rust test suite is a single unit test,
-and it is not hardened for anything. Do not run it in production.
+This is learning code. It has no auth and no rate limiting, the backend has no unit tests, and none
+of it is hardened for anything. Do not run it in production.
 
 ## Working with Claude
 
@@ -272,7 +353,8 @@ before.
 - `test.fish`, the acceptance script, extended at each phase so I could debug on my own.
 - This README.
 - Git commits when I asked for them.
-- A small ownership playground at `src/bin/test.rs`, used to try out the RustOwl visualiser.
+- The TypeScript rebuild in `backend/`. It is a port of my Rust code, compared against the running
+  Rust server request by request.
 
-The backend code under `src/`, the SQL, and the fixes are mine. Claude's part was making sure I
-understood why each line was there and catching it when it was wrong.
+The Rust backend code (now in the git history), the SQL, and the fixes are mine. Claude's part there was making
+sure I understood why each line was there and catching it when it was wrong.

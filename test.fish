@@ -49,7 +49,7 @@ end
 
 # ---------------------------------------------------------------- reachable?
 if not curl -s -o /dev/null -m 3 $BASE/health
-    echo "server not answering on $BASE — start it with: cargo run"
+    echo "server not answering on $BASE — start it with: cd backend && bun run start"
     exit 1
 end
 
@@ -99,7 +99,8 @@ set -l gone (body $BASE/tasks/$id)
 check "GET deleted task" 404 (code $BASE/tasks/$id)
 contains_check "  error shape" '"error":"not_found"' "$gone"
 contains_check "  has a message" '"message"' "$gone"
-check "  content-type is json" application/json (curl -s -i -m 5 $BASE/tasks/$id | string match -rg 'content-type: ([^;\r]+)')
+# -i because header names are case-insensitive: Bun writes "Content-Type".
+check "  content-type is json" application/json (curl -s -i -m 5 $BASE/tasks/$id | string match -rgi 'content-type: ([^;\r]+)')
 
 check "DELETE twice" 404 (code -X DELETE $BASE/tasks/$id)
 
@@ -122,7 +123,7 @@ set -l blank (body -X POST $BASE/tasks -H 'content-type: application/json' -d '{
 check "POST empty title" 422 (code -X POST $BASE/tasks -H 'content-type: application/json' -d '{"title":""}')
 contains_check "  says which field" title "$blank"
 contains_check "  has a message" '"message"' "$blank"
-check "  content-type is json" application/json (curl -s -i -m 5 -X POST $BASE/tasks -H 'content-type: application/json' -d '{"title":""}' | string match -rg 'content-type: ([^;\r]+)')
+check "  content-type is json" application/json (curl -s -i -m 5 -X POST $BASE/tasks -H 'content-type: application/json' -d '{"title":""}' | string match -rgi 'content-type: ([^;\r]+)')
 
 check "POST 250-char title" 422 (code -X POST $BASE/tasks -H 'content-type: application/json' -d "{\"title\":\"$too_long\"}")
 

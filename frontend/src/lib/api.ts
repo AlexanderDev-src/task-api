@@ -10,7 +10,7 @@ import type {
    THE ONLY FILE THAT SHOULD TALK TO THE BACKEND.
 
    Requests go to BASE_URL, which defaults to "/api". In dev that path is
-   proxied to the ntex server by the `server.proxy` block in vite.config.ts,
+   proxied to the backend by the `server.proxy` block in vite.config.ts,
    which strips the "/api" prefix. Set VITE_API_URL in frontend/.env.local to
    point at a different origin (the backend has no CORS layer, so a
    cross-origin URL needs one added first).
@@ -20,7 +20,7 @@ import type {
 
 export const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
 
-/** Thrown on any non-2xx. `code` is the `error` field of src/error.rs. */
+/** Thrown on any non-2xx. `code` is the `error` field of the error body. */
 export class ApiError extends Error {
   status: number;
   code: string;

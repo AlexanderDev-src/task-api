@@ -1,5 +1,5 @@
-/* Wire types. These mirror src/models/task.rs — serde is not renaming fields,
-   so they stay snake_case on the wire.
+/* Wire types. These mirror backend/src/presentation/http/responses.ts — fields
+   stay snake_case on the wire.
 
    TODO: re-check this file after the SQLite -> PostgreSQL migration.
    A `due_at` field is expected there; the calendar groups by `created_at`
@@ -36,7 +36,7 @@ export type TaskQuery = {
   offset?: number;
 };
 
-/** Every non-2xx response body from AppError in src/error.rs. */
+/** Every non-2xx response body built in backend/src/presentation/http/responses.ts. */
 export type ApiErrorBody = {
   error: string;
   message: string;

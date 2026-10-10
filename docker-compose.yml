@@ -1,6 +1,6 @@
-# Frontend + database. The api service is commented out until the SQLite ->
-# PostgreSQL move lands, because it needs a backend Dockerfile and a bind
-# address change.
+# Frontend + database. The api runs on the host (cd backend && bun run start).
+# Its service is commented out below because it still needs a Dockerfile and a
+# bind address change.
 #
 # Run what exists today:  docker compose up --build web
 services:
@@ -27,21 +27,23 @@ services:
       timeout: 3s
       retries: 10
 
-  # TODO: enable after the PostgreSQL migration.
-  #   1. Write a Dockerfile at the repo root (multi-stage: rust:1-slim build,
-  #      debian:bookworm-slim runtime, copy target/release/restapi).
-  #   2. src/main.rs binds ("127.0.0.1", config.port). Inside a container that
-  #      only listens on loopback, so `web` cannot reach it — read the host from
+  # TODO: run the api in Docker too.
+  #   1. Write backend/Dockerfile (oven/bun image, `bun install`, then
+  #      `bun src/main.ts`). The build context must be the repo root, because
+  #      the server reads the SQL files in migrations/ at startup.
+  #   2. backend/src/main.ts binds "127.0.0.1". Inside a container that only
+  #      listens on loopback, so `web` cannot reach it — read the host from
   #      env (HOST, default "127.0.0.1") and set HOST=0.0.0.0 here.
   #   3. Uncomment the /api/ location block in frontend/nginx.conf.
   #
   # api:
-  #   build: .
+  #   build:
+  #     context: .
+  #     dockerfile: backend/Dockerfile
   #   environment:
   #     DATABASE_URL: postgres://restapi:restapi@db:5432/tasks
   #     HOST: 0.0.0.0
   #     PORT: 8080
-  #     WORKERS: 4
   #   depends_on:
   #     db:
   #       condition: service_healthy
